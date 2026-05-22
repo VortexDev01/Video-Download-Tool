@@ -1,0 +1,66 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+myenv/
+# Distribution / packaging
+build.*
+build/
+dist/
+*.egg-info/
+*.eggs/
+.eggs/
+
+# Env files
+.env
+
+# Logs
+logs/
+*.log
+
+
+# Database files
+*.sqlite3
+
+# IDE settings
+.vscode/
+.idea/
+
+.mypy_cache/
+.idea/
+
+# Unit test / coverage reports
+tests/
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+
+.gemini/
+.agent/
+
+# Local agent instructions
+AGENTS.md
+agents.md
+
+# Graphify local artifacts
+graphify-out/
+.graphify*
+.codex/
