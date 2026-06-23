@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from collections import defaultdict
 from yt_dlp import YoutubeDL
 from datetime import datetime
+from services.ydl_utils import apply_runtime_options, is_tiktok_url, is_youtube_url
 
 # ============================================
 # Design Tokens
@@ -59,6 +60,7 @@ class LinkGrabberPage(ctk.CTkFrame):
         self.current_download_index = 0
         self.total_to_download = 0
         self.completed_count = 0
+        self.failed_count = 0
         
         # --- Filter States ---
         self.hide_duplicates = ctk.BooleanVar(value=True)
@@ -758,6 +760,84 @@ class LinkGrabberPage(ctk.CTkFrame):
             self.after(0, lambda fn=filename: self.log(f"✓ Downloaded: {fn}"))
             self.after(0, self.update_counter)
     
+    def _count_partial_files(self):
+        """Count leftover partial files in the active download folder."""
+        partial_count = 0
+        for root, _, files in os.walk(self.download_dir):
+            for name in files:
+                if name.endswith((".part", ".ytdl")):
+                    partial_count += 1
+        return partial_count
+
+    def _build_ydl_opts(self):
+        """Build yt-dlp options tuned for pasted social/video links."""
+        ydl_opts = {
+            'format': self._quality_to_format(self.quality_var.get()),
+            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s').replace('\\', '/'),
+            'progress_hooks': [self._progress_hook],
+            'ignoreerrors': False,
+            # Fresh downloads are safer for signed media URLs from sites like YouTube/TikTok
+            'continuedl': False,
+            'retries': 5,
+            'fragment_retries': 5,
+            'extractor_retries': 3,
+            'file_access_retries': 3,
+            'merge_output_format': 'mp4',
+            'noprogress': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        return apply_runtime_options(ydl_opts, enable_remote_components=True)
+
+    def _download_url(self, url, ydl_opts):
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+    def _retry_with_browser_cookies(self, url, base_opts):
+        """Retry a blocked YouTube URL using browser cookies if available."""
+        last_error = None
+
+        for browser in ("edge", "chrome", "brave"):
+            if self.cancel_event.is_set():
+                raise Exception("USER_CANCELLED")
+
+            self.after(0, lambda b=browser: self.log(f"INFO: Retrying YouTube with {b} browser cookies..."))
+            cookie_opts = dict(base_opts)
+            cookie_opts['cookiesfrombrowser'] = (browser, None, None, None)
+
+            try:
+                self._download_url(url, cookie_opts)
+                self.after(0, lambda b=browser: self.log(f"INFO: Browser cookie fallback worked with {b}."))
+                return
+            except Exception as exc:
+                last_error = str(exc)
+
+        raise Exception(last_error or "Browser cookie fallback failed")
+
+    def _explain_download_error(self, url, error_text):
+        """Log a clearer explanation for common site-specific failures."""
+        if is_youtube_url(url) and "HTTP Error 403" in error_text:
+            self.after(
+                0,
+                lambda: self.log(
+                    "WARNING: YouTube blocked the media request. If Chrome/Edge is open, close it and retry so browser-cookie fallback can work."
+                )
+            )
+        elif "Could not copy Chrome cookie database" in error_text or "Failed to decrypt with DPAPI" in error_text:
+            self.after(
+                0,
+                lambda: self.log(
+                    "WARNING: Browser cookies could not be read. Close Chrome/Edge/Brave completely and retry."
+                )
+            )
+        elif is_tiktok_url(url) and "Unable to extract webpage video data" in error_text:
+            self.after(
+                0,
+                lambda: self.log(
+                    "WARNING: TikTok changed the page response for this video. This is currently an upstream yt-dlp extraction issue."
+                )
+            )
+
     def _start_download(self):
         """Start downloading selected URLs."""
         selected_urls = [link['url'] for link in self.filtered_links if link['var'].get()]
@@ -777,6 +857,7 @@ class LinkGrabberPage(ctk.CTkFrame):
         self.is_downloading = True
         self.cancel_event.clear()
         self.completed_count = 0
+        self.failed_count = 0
         self.total_to_download = len(selected_urls)
         self.counter_label.configure(text="Downloaded: 0")
         
@@ -797,15 +878,16 @@ class LinkGrabberPage(ctk.CTkFrame):
         """Background download worker."""
         os.makedirs(self.download_dir, exist_ok=True)
         
-        ydl_opts = {
-            'format': self._quality_to_format(self.quality_var.get()),
-            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s').replace('\\', '/'),
-            'progress_hooks': [self._progress_hook],
-            'ignoreerrors': True,
-            'continuedl': True,
-            'quiet': True,
-            'no_warnings': True,
-        }
+        partial_count = self._count_partial_files()
+        if partial_count:
+            self.after(
+                0,
+                lambda count=partial_count: self.log(
+                    f"INFO: Found {count} partial file(s). Link Grabber will start fresh instead of resuming to avoid 403 errors."
+                )
+            )
+
+        ydl_opts = self._build_ydl_opts()
         
         for i, url in enumerate(urls):
             if self.cancel_event.is_set():
@@ -816,11 +898,20 @@ class LinkGrabberPage(ctk.CTkFrame):
                        self.log(f"📥 Downloading {idx}/{total}: {urls[idx-1][:60]}..."))
             
             try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                self._download_url(url, ydl_opts)
             except Exception as e:
                 if "USER_CANCELLED" not in str(e):
-                    self.after(0, lambda err=str(e): self.log(f"❌ Error: {err[:100]}"))
+                    error_text = str(e)
+                    if is_youtube_url(url) and "HTTP Error 403" in error_text:
+                        try:
+                            self._retry_with_browser_cookies(url, ydl_opts)
+                            continue
+                        except Exception as fallback_error:
+                            error_text = str(fallback_error)
+
+                    self.failed_count += 1
+                    self._explain_download_error(url, error_text)
+                    self.after(0, lambda err=error_text: self.log(f"❌ Error: {err[:100]}"))
         
         # Complete
         self.after(0, self._on_download_complete)
@@ -832,8 +923,15 @@ class LinkGrabberPage(ctk.CTkFrame):
         self.stop_btn.configure(state="disabled")
         
         if not self.cancel_event.is_set():
-            self.log(f"✅ Download complete! {self.completed_count} files downloaded.")
-            self.progress_label.configure(text="✅ Complete")
+            if self.failed_count and not self.completed_count:
+                self.log(f"⚠️ Download finished with errors. 0 succeeded, {self.failed_count} failed.")
+                self.progress_label.configure(text=f"Failed: {self.failed_count}")
+            elif self.failed_count:
+                self.log(f"⚠️ Download complete with partial failures. {self.completed_count} succeeded, {self.failed_count} failed.")
+                self.progress_label.configure(text=f"Done: {self.completed_count}, Failed: {self.failed_count}")
+            else:
+                self.log(f"✅ Download complete! {self.completed_count} files downloaded.")
+                self.progress_label.configure(text="✅ Complete")
         else:
             self.progress_label.configure(text="Stopped")
     

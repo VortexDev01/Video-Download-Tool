@@ -64,3 +64,10 @@ agents.md
 graphify-out/
 .graphify*
 .codex/
+
+.downloads/
+downloads/
+download_history.json
+VortexDevTool_v1.spec
+VortexDevTool_v2.spec
+YouTubeDownloader.spec

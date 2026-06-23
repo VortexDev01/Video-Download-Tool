@@ -6,6 +6,7 @@ import time
 import re
 import concurrent.futures
 from utils import resource_path
+from services.ydl_utils import apply_runtime_options
 
 class DownloadService:
     def __init__(self, callback):
@@ -199,6 +200,7 @@ class DownloadService:
             'concurrent_fragment_downloads': 4,  # Parallel fragment downloads
             'ffmpeg_location': ffmpeg_path,
         }
+        ydl_opts = apply_runtime_options(ydl_opts)
         
         try:
             with YoutubeDL(ydl_opts) as ydl:
@@ -258,6 +260,7 @@ class DownloadService:
                 'ignoreerrors': True,
                 'extract_flat': False,
             }
+            info_ydl_opts = apply_runtime_options(info_ydl_opts)
             
             with YoutubeDL(info_ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -348,6 +351,8 @@ class DownloadService:
             if "USER_CANCELLED" in str(e) or cancelled:
                 self.callback['log']("🛑 Download cancelled.")
             else:
+                if "Unable to extract webpage video data" in str(e):
+                    self.callback['log']("WARNING: TikTok changed the page response for this video. This is currently an upstream yt-dlp extraction issue.")
                 self.callback['log'](f"❌ Error: {str(e)}")
         finally:
             with self.lock:

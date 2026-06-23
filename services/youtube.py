@@ -1,6 +1,7 @@
 import threading
 import os
 from yt_dlp import YoutubeDL
+from services.ydl_utils import apply_runtime_options
 
 
 class DownloaderService:
@@ -87,13 +88,19 @@ class DownloaderService:
             'format': self._quality_to_format(options['quality']),
             'outtmpl': os.path.join(download_dir, '%(uploader)s - %(title)s.%(ext)s').replace('\\', '/'),
             'ignoreerrors': True,
-            'continuedl': True,
+            'continuedl': False,
             'nooverwrites': True,
             'merge_output_format': 'mp4',
             'progress_hooks': [progress_hook],
+            'retries': 5,
+            'fragment_retries': 5,
+            'extractor_retries': 3,
+            'file_access_retries': 3,
+            'noprogress': True,
             'quiet': True,
             'no_warnings': True,
         }
+        ydl_opts = apply_runtime_options(ydl_opts, enable_remote_components=True)
         
         if options.get('limit'):
             ydl_opts['playlistend'] = options['limit']
@@ -114,6 +121,8 @@ class DownloaderService:
             if "USER_CANCELLED" in str(e):
                 self.callbacks['log']("🛑 Download cancelled.")
             else:
+                if "HTTP Error 403" in str(e):
+                    self.callbacks['log']("WARNING: YouTube blocked the media request. This is usually a signed-URL or cookie/session issue.")
                 self.callbacks['log'](f"❌ Error: {str(e)[:100]}")
         finally:
             if 'on_complete' in self.callbacks:
@@ -138,6 +147,7 @@ class DownloaderService:
                 'quiet': True,
                 'ignoreerrors': True,
             }
+            ydl_opts = apply_runtime_options(ydl_opts, enable_remote_components=True)
             
             # Count each category
             for category, cat_url in [
